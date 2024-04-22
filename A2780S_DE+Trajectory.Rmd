@@ -1,0 +1,814 @@
+---
+title: "A2780S"
+author: "Suchakhree_Amsaard"
+date: "2024-04-10"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(future) #simple and uniform way of evaluating R expressions
+library(ggplot2) #plotting library 
+library(bigmemory)#manipulation of big objects
+library(Seurat) #seurat library 
+library(clustree)
+library(dplyr)
+```
+
+## Set working directory to pull files
+```{r}
+# Define the base directory where the new subfolder will be created
+base_dir <- "/Users/fin/Desktop/A2780S/"
+```
+
+# STEP 1: Load all the data & Quality Control
+## Load RDS files
+```{r}
+A2780S_S <- readRDS("/Users/fin/Dropbox (UFL)/research-share/Fin/data/A2780S-CT_S_UnprocessedCohort_SeuratObj_20191023.rds")
+A2780S_R <- readRDS("/Users/fin/Dropbox (UFL)/research-share/Fin/data/A2780S-CT_R_UnprocessedCohort_SeuratObj_20191028.rds")
+```
+## Combine Sensitive and Resistance data 
+```{r}
+A2780S <- merge(x=A2780S_S, y=A2780S_R, #x and y are used to specify the two Seurat objects you want to merge.
+                add.cell.ids = c("A2780S_S","A2780S_R"),
+                merge.data=TRUE,
+                project = "A2780S_Pair")
+dim(A2780S) # 33538 3870 rows then columns. Features across samples
+
+# Define the base directory and the new subfolder name
+new_subfolder_name <- "Unprocessed_data"
+
+# Construct the full path for the new subfolder
+new_subfolder_path <- file.path(base_dir, new_subfolder_name)
+
+# Create the new subfolder if it doesn't exist
+if (!dir.exists(new_subfolder_path)) {
+  dir.create(new_subfolder_path)
+}
+
+# Specify the filename for the RDS file, incorporating the current date
+rds_filename <- paste0("A2780S-CT_S+R_UnprocessedCohort_SeuratObj_", ".rds")
+
+# Full path for the RDS file including the subfolder
+full_rds_path <- file.path(new_subfolder_path, rds_filename)
+
+# Save the Seurat object as an RDS file in the specified location
+saveRDS(A2780S, file = full_rds_path)
+```
+
+# STEP 2: Quality control 
+```{r}
+# grep function searches for matches to argument patterns within each element of a character vector 
+# pattern chosen is anything that contains ^MT-
+mito.genes <- grep(pattern = "^MT-", A2780S@assays$RNA@counts@Dimnames[[1]], value = TRUE) 
+mito.genes
+```
+
+```{r}
+A2780S$percent.MT <- PercentageFeatureSet(A2780S,pattern="^MT-") #The percentage of reads that map to the mitochondrial genome
+percent.mito <- A2780S$percent.MT/100
+
+#Add a column to meta.data 
+A2780S[['percent.mito']] <- percent.mito
+head(A2780S@meta.data,5) #Show QC metrics for the first 5 cells in the control group
+```
+
+```{r}
+## Descriptive stats:
+summary(A2780S@meta.data$nFeature_RNA) 
+# Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+#    123    575    1095    1791    3236    9602 
+
+# Set up an upper and lower limit, na.rm=TRUE because the features column has some missing values 
+## Upper limit is the mean of the feature values + 2 sd 
+nFeatUpper <- mean(A2780S@meta.data$nFeature_RNA, na.rm=TRUE) + 2*sd(A2780S@meta.data$nFeature_RNA, na.rm=TRUE) ##  1790.597 + 2919.648
+nFeatLower <- 200 
+
+VlnPlot(object=A2780S, features = c("nFeature_RNA"))+geom_hline(yintercept=nFeatUpper, linetype="dashed", color="red", size=1)
+```
+
+```{r}
+summary(A2780S@meta.data$percent.mito)
+# Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.00000 0.03396 0.06772 0.13197 0.09882 0.92928
+
+### assumption: cancer cells may have higher metabolic rate
+##Set an upper limit with the mean and 2 sd, not use the 5%, we need to cut off a higher percentage anyways because cancer cells have a high metabolic rate 
+perMitoUpper <- mean(A2780S@meta.data$percent.mito, na.rm=TRUE) + 2*sd(A2780S@meta.data$percent.mito, na.rm=TRUE) ## 0.1319656 + 0.3696054
+VlnPlot(object=A2780S, features = c("percent.mito"))+geom_hline(yintercept=perMitoUpper, linetype="dashed", color="red", size=1)
+
+# Divide the data based on the limits established
+# subset function in Seurat to filter cells in A2780S
+# filter away cells that have > perMitoUpper mitochondrial counts
+A2780S <- subset(x=A2780S, subset=nFeature_RNA > nFeatLower & nFeature_RNA < nFeatUpper & percent.mito < perMitoUpper)
+
+# The subset argument filters cells based on the specified conditions, including
+# nFeature_RNA > nFeatLower (number of features greater than a lower threshold), 
+# nFeature_RNA < nFeatUpper (number of features less than an upper threshold),
+# percent.mito < perMitoUpper (percentage of mitochondrial genes less than an upper threshold).
+
+dim(A2780S)
+# 33538  3449
+```
+
+```{r}
+# Define the name of the new folder
+new_subfolder_name <- "Process_data"
+
+# Construct the full path for the 'Process_data' folder
+process_data_folder_path <- file.path(base_dir, new_subfolder_name)
+
+# Create the 'Process_data' folder if it doesn't exist
+if (!dir.exists(process_data_folder_path)) {
+  dir.create(process_data_folder_path)
+}
+
+# Specify the filename for the RDS file, including the automated date
+rds_filename <- paste0("A2780S_S+R_QC-Subset-Cohort_SeuratObj_thruStep2_", ".rds")
+
+# Construct the full path for the RDS file within the 'Process_data' folder
+full_rds_path <- file.path(process_data_folder_path, rds_filename)
+
+# Save the Seurat object as an RDS file in the specified location
+saveRDS(A2780S, file = full_rds_path)
+```
+
+```{r}
+# Visualize QC metrics as a violin plot
+VlnPlot(A2780S, features = c("nFeature_RNA", "nCount_RNA", "percent.mito"), ncol = 3)
+```
+
+
+
+# STEP 3: Normalize
+Normalize count data per cell and transform to log scale. Make variable contribute equally to the analysis 
+LogNormalize: feature counts for each cell are divided by the total counts for that cell and multiplied by the scale factor 
+```{r}
+A2780S <- NormalizeData(object=A2780S, normalization.method="LogNormalize", scale.factor=1e4)
+dim(A2780S)
+# 33538  3449
+
+# Specify the filename for the RDS file, including the automated date and step identifier
+rds_filename <- paste0("A2780S_S+R_QC-Subset-Cohort_SeuratObj_thruStep3_", ".rds")
+
+# Construct the full path for the RDS file within the 'Process_data' folder
+full_rds_path <- file.path(process_data_folder_path, rds_filename)
+
+# Save the Seurat object as an RDS file in the specified location
+saveRDS(A2780S, file = full_rds_path)
+```
+# STEP 4: Detection of variable features across the single cells #Start Here
+Seurat can calculate high variable genes and focuses on these 
+```{r}
+# FindVariableFeatures calculates the average expression and dispersion for each gene, places these genes into bins and calculates a z-score for dispersion within each bin 
+A2780S <- FindVariableFeatures(object=A2780S, selection.method = 'mean.var.plot',
+                               mean.cutoff = c(0.0125, 3), # x-axis, gene expression
+                               dispersion.cutoff = c(0.5, Inf), #y-axis
+                               do.plot=TRUE)
+
+length(x = VariableFeatures(object=A2780S))  
+## number of variable features detected after filtering, normalization: 8257
+
+VariableFeaturePlot(A2780S)
+rds_filename <- paste0("A2780S_S+R_QC-Subset-Cohort_SeuratObj_thruStep4_", ".rds")
+full_rds_path <- file.path(process_data_folder_path, rds_filename)
+saveRDS(A2780S, file = full_rds_path)
+```
+
+# STEP 5: Scaling data and removing unwanted sources of variation 
+Remove 'uninteresting' sources of variation such as technical noise, batch effects and biological sources of variation (cell cycle arrest). Improve analysis since it reduces dimensions and improves clustering
+```{r}
+#Seurat scale data function already does all these things for use, we only want to scale certain variables 
+A2780S <- ScaleData(object=A2780S, vars.to.regress = c("nCount_RNA","percent.mito")) 
+
+rds_filename <- paste0("A2780S_S+R_QC-Subset-Cohort_SeuratObj_thruStep5_", ".rds")
+full_rds_path <- file.path(process_data_folder_path, rds_filename)
+saveRDS(A2780S, file = full_rds_path)
+```
+
+# STEP 6: Perform linear dimension reduction/ Determine PCA 
+Do linear dimension reduction to group the features per principal components. The ones that are the most similar. Clustering starts here
+Look at different graphs but heatamps are most helpful when trying to decide which PCs to include for further downstream analyses. Cells and genes ordered according to their PCA scores. We want to select the PCA that have the most variable genes to select for further study 
+ESTABLISHED: We randomly permute a subset of the data (1% by default) and rerun PCA, constructing a ‘null distribution’ of gene scores, and repeat this procedure. We identify ‘significant’ PCs as those who have a strong enrichment of low p-value genes.
+```{r}
+#Get the principal components, Seurat selects the most variable and orders them, we have to decide what PC we will be working with  
+A2780S <- RunPCA(object=A2780S, features=VariableFeatures(object=A2780S), verbose = TRUE, npcs = 200)
+A2780S <- ProjectDim(object=A2780S)
+DimPlot(A2780S,reduction="pca")
+
+rds_filename <- paste0("A2780S_S+R_QC-Subset-Cohort_SeuratObj_thruStep6_",".rds")
+full_rds_path <- file.path(process_data_folder_path, rds_filename)
+saveRDS(A2780S, file = full_rds_path)
+A2780S@reductions$pca
+```
+
+## ElbowPlot
+```{r}
+ElbowPlot(A2780S,ndims = 200)
+```
+## JackStraw Plot
+```{r}
+# Load the Seurat object
+A2780S <- readRDS("/Users/fin/Desktop/A2780S/Process_data/A2780S_S+R_QC-Subset-Cohort_SeuratObj_thruStep6_.rds")
+
+# Run JackStraw to determine statistically significant principal components
+A2780S <- JackStraw(A2780S, dims = 50, num.replicate = 100)
+
+# Score JackStraw to apply statistical testing to the PCS
+A2780S <- ScoreJackStraw(A2780S, dims = 1:50)
+
+# Generate the JackStraw plot for the first 50 dimensions
+jackStrawPlot <- JackStrawPlot(A2780S, dims = 1:50)
+
+# Define the path for saving the plot
+plot_path <- "/Users/fin/Desktop/A2780S/Process_data/jackStrawPlot.png"
+
+# Save the JackStraw plot
+ggsave(filename = plot_path, plot = jackStrawPlot, width = 10, height = 8, dpi = 300)
+```
+
+
+# STEP 7: Find Clusters
+```{r}
+library(data.table)
+library(dplyr)
+library(clustree)
+```
+
+Create a k-nearest neighbor (KNN) graph, that will draw connections between cells with similar feature expression patterns, and then partition this graph into highly interconnected communities 
+KNN graphs constructed are based in euclidean distance in PCA space, and refine the edge weights between two cells based on the shared overlap in their local neighborhoods, Do this using the FindNeighbors() function 
+Cluster cells use an optimization technique such as Louvain algorithm (detect communities in large networks) or SLM to group cells together. FindCLuster() function does this, and contains a resolution parameter that sets the 'granularity' of the downstream clustering, the higher the values the more clusters. Set parameter between 0.4-1.2 for around 3000 cells. 
+```{r}
+A2780S <- readRDS("/Users/fin/Desktop/A2780S/Process_data/A2780S_S+R_QC-Subset-Cohort_SeuratObj_thruStep6_.rds") # Ensure full_rds_path is correctly defined earlier in your script
+
+# Define the name of the new folder for clustree plots
+clustree_folder_name <- "clustree"
+
+# Construct the full path for the clustree folder
+clustree_folder_path <- file.path(base_dir, clustree_folder_name)
+
+# Create the clustree folder if it doesn't exist
+if (!dir.exists(clustree_folder_path)) {
+  dir.create(clustree_folder_path, recursive = TRUE)
+}
+
+# Define the range of resolutions to scan
+range <- seq(0, 1, by = 0.05)
+
+# Loop through each resolution
+for (res in range) {
+  A2780S <- FindNeighbors(object = A2780S, dims = 1:50)  # Use 50 principal components
+  A2780S <- FindClusters(object = A2780S, resolution = res, n.start = 100)  # Louvain clustering
+}
+
+# Generate and save the clustree plot
+# Construct the full path for the clustree plot, including the current date
+clustree_plot_path <- file.path(clustree_folder_path, paste0("A2780S_S+R_QC-Subset-Cohort_SeuratObj_clustree_ResScan_",".pdf"))
+
+# Open a PDF device to save the clustree plot
+pdf(clustree_plot_path, width = 15, height = 24)
+# Generate the clustree plot
+tPlot <- clustree(A2780S, prefix = 'RNA_snn_res.')
+print(tPlot)
+# Close the PDF device
+dev.off()
+
+rds_filename <- paste0("A2780S_S+R_QC-Subset-Cohort_SeuratObj_thruStep7_", ".rds")
+full_rds_path <- file.path(process_data_folder_path, rds_filename)
+saveRDS(A2780S, file = full_rds_path)
+```
+
+# STEP 8: UMAP
+## Select res from clustree to construct UMAP 
+## Tell the path
+```{r}
+# Base dir
+base_dir <- "/Users/fin/Desktop/A2780S/"
+
+# Define the name of the new folder
+new_subfolder_name <- "Process_data"
+
+# Construct the full path for the 'Process_data' folder
+process_data_folder_path <- file.path(base_dir, new_subfolder_name)
+```
+
+```{r}
+umap_folder_name <- "UMAP"
+
+# Construct the full path for the UMAP folder
+umap_folder_path <- file.path(base_dir, umap_folder_name)
+
+# Create the UMAP folder if it doesn't exist
+if (!dir.exists(umap_folder_path)) {
+  dir.create(umap_folder_path, recursive = TRUE)
+}
+
+# Read the Seurat object
+A2780S.F <- readRDS("/Users/fin/Desktop/A2780S/Process_data/A2780S_S+R_QC-Subset-Cohort_SeuratObj_thruStep7_.rds") # Ensure full_rds_path is correctly defined earlier in your script
+
+# Find Clusters at a specific resolution
+clustree_resolution = 0.1
+A2780S <- FindClusters(object = A2780S.F, resolution = clustree_resolution, n.start = 100) #res select from clustree
+
+# Find all markers
+A2780S.markers <- FindAllMarkers(A2780S, min.pct = 0.25, logfc.threshold = 0.25)
+
+# Run UMAP with PCA reduction and specified dimensions
+A2780S <- RunUMAP(object = A2780S, reduction = "pca", dims = 1:50)
+
+# Generate and save UMAP plot by cluster
+pdf_path_cluster <- file.path(umap_folder_path, paste0("A2780S_S+R_QC-Subset-Cohort_UMAP_byCluster_",clustree_resolution, ".pdf"))
+pdf(pdf_path_cluster, width=12, height=8)
+dPlot <- DimPlot(A2780S, reduction = "umap") + xlim(-15, 15) + ylim(-15, 15)
+print(dPlot)
+dev.off()
+
+# Generate and save UMAP plot by cell type
+pdf_path_celltype <- file.path(umap_folder_path, paste0("A2780S_S+R_QC-Subset-Cohort_UMAP_clustersByType_", ".pdf"))
+pdf(pdf_path_celltype, width=12, height=8)
+dPlot <- DimPlot(A2780S, reduction = "umap", group.by = 'orig.ident') + xlim(-15, 15) + ylim(-15, 15)
+print(dPlot)
+dev.off()
+
+# Save the modified Seurat object
+rds_path <- file.path(process_data_folder_path, paste0("A2780S_S+R_QC-Subset-Cohort_SeuratObj_thruStep8_", ".rds"))
+saveRDS(A2780S, file = rds_path)
+DimPlot(A2780S, reduction = "umap")
+```
+
+## grouped and count data cluster in sensitive and resistance
+## Get Column Name
+
+```{r}
+A2780S <- readRDS("/Users/fin/Desktop/A2780S/Process_data/A2780S_S+R_QC-Subset-Cohort_SeuratObj_thruStep8_.rds")
+listNames <- A2780S@meta.data$orig.ident
+
+# Create a data frame without column name
+df <- data.frame(listNames = listNames, stringsAsFactors = FALSE)
+
+# Define the output file path
+output_file_path <- "/Users/fin/Desktop/A2780S/UMAP/A2780SOutputDataNames.csv"
+
+# Save the list to a CSV file without row names and column names
+write.csv(df, file = output_file_path, row.names = FALSE, col.names = FALSE, sep=",")
+```
+
+## Get Cluster in for each cell
+```{r}
+# Replace 'seurat_clusters' with the actual column name if it's different
+cluster_assignments <- A2780S@meta.data$seurat_clusters
+
+# Create a data frame of cluster assignments
+df_clusters <- data.frame(cluster = cluster_assignments)
+
+# Define the output file path for the cluster assignments CSV
+output_file_path <- "/Users/fin/Desktop/A2780S/UMAP/A2780SClusterAssignments.csv"
+
+# Save the cluster assignments to a CSV file
+write.csv(df_clusters, file = output_file_path, row.names = FALSE, quote = FALSE)
+```
+
+```{r}
+# Read the CSV files
+mydat1 <- fread("/Users/fin/Desktop/A2780S/UMAP/A2780SClusterAssignments.csv")
+mydat2 <- fread("/Users/fin/Desktop/A2780S/UMAP/A2780SOutputDataNames.csv")
+
+# Merge the two data tables by columns
+fulldat <- cbind(UMI = mydat2[[1]], cluster = mydat1[[1]])
+
+# Convert the merged data into a data table if not already
+fulltab <- as.data.table(fulldat, stringsAsFactors = FALSE)
+
+# name table columns
+names(fulltab)[1] <- paste("UMI")
+names(fulltab)[2] <- paste("cluster")
+print(fulltab)
+
+# From fulltab, group by cluster then count number in each cluster
+# create a table counting unique UMIs/cells per cluster
+tabPerClus <- fulltab %>%
+  group_by(UMI, cluster) %>%
+  summarise(count = n(), .groups = 'drop')
+
+divout <-  "/Users/fin/Desktop/A2780S/UMAP/CellBreakdown_PerClusterPerType.csv"
+write.csv(tabPerClus, file=divout)
+print(tabPerClus)
+```
+
+## Find markers for each of the identity classes in a dataset
+```{r}
+# Store cell names
+cell_names <- colnames(A2780S)
+
+# Define the GeneList folder path within the base directory
+gene_list_dir <- file.path(base_dir, "GeneList")
+
+# Create the GeneList directory if it doesn't exist
+if (!dir.exists(gene_list_dir)) {
+  dir.create(gene_list_dir, recursive = TRUE)
+}
+
+# Save the complete marker list with the automated date
+write.csv(A2780S.markers, file.path(gene_list_dir, paste0("DiffExpGeneList_A2780S_ALL_", ".csv")))
+
+# Iterate over each cluster and save the differentially expressed gene list in the GeneList folder
+unique_clusters <- unique(A2780S.markers$cluster)
+
+for (cluster in unique_clusters) {
+  # Filter markers for the current cluster
+  clus_markers <- A2780S.markers %>% 
+    filter(cluster == cluster) %>% 
+    select(avg_log2FC, gene)
+  
+  # Define the file path for this cluster's gene list, including the GeneList directory
+  file_path <- file.path(gene_list_dir, paste0("DiffExpGeneList_A2780S_Cluster-", cluster, "_", ".csv"))
+  
+  # Save the filtered gene list to the CSV file
+  write.csv(clus_markers, file_path, row.names = FALSE)
+}
+```
+#STEP DEG: DIFFERENTIALLY EXPRESSED GENES 
+Identifies differentially expressed genes between two groups of cells using a Wilcoxon Rank Sum test (default)
+Reports only both positive and negatively differentially expressed genes
+Requires the feature to be detected at a min of 25% in either groups. Limit testing to genes which show, on average, at least X-fold difference (log-scale) between the two groups of cells 
+## DE
+```{r}
+base_plot_dir = "/Users/fin/Desktop/A2780S/Feature_Plots"
+
+# Check and create the base directory if it does not exist
+if (!dir.exists(base_plot_dir)) {
+  dir.create(base_plot_dir, recursive = TRUE)
+}
+
+# Find the top 15 markers based on avg_log2FC for each cluster
+top15 <- A2780S.markers %>%
+         group_by(cluster) %>%
+         top_n(n = 5, wt = avg_log2FC)
+# Write the data to a CSV file
+write.csv(top15, paste0(base_plot_dir, "/top15_markers_resolution_", clustree_resolution, ".csv"), row.names = FALSE)
+
+# Generate a DotPlot for the top genes
+plot <- DotPlot(object = A2780S, features = unique(top15$gene), assay = "RNA") + coord_flip()
+
+# Create a specific folder for this resolution
+resolution_folder <- file.path(base_plot_dir, paste0("Resolution_", clustree_resolution))
+
+# Check if the directory exists; if not, create it
+if (!dir.exists(resolution_folder)) {
+  dir.create(resolution_folder, recursive = TRUE)
+}
+
+# Save the DotPlot to the resolution-specific folder
+dotplot_filename <- file.path(resolution_folder, paste0("top_genes_dotplot_res", clustree_resolution, ".png"))
+ggsave(dotplot_filename, plot = plot, width = 10, height = 8, dpi = 300)
+
+# Loop through each gene in top15 to create and save a feature plot
+for (gene in unique(top15$gene)) {
+  p <- FeaturePlot(object = A2780S, features = gene) + NoLegend() + ggtitle(gene)
+  
+  # Construct the file path, including the resolution folder and file name
+  feature_plot_filename <- file.path(resolution_folder, paste0("feature_plot_", gene, ".png"))
+  
+  # Save the plot to the file in the resolution-specific folder
+  ggsave(feature_plot_filename, plot = p, width = 8, height = 6, dpi = 300)
+}
+```
+
+# GetCountMatrix
+## Reading Seurat Object and Extracting Data:
+```{r}
+# Load the Seurat object
+A2780S <- readRDS("/Users/fin/Desktop/A2780S/Process_data/A2780S_S+R_QC-Subset-Cohort_SeuratObj_thruStep8_.rds")
+
+# assay name (verify this is correct)
+matrix <- GetAssayData(object = A2780S, slot = "scale.data")
+View(matrix)
+#data: This slot usually contains the normalized data. Normalization is done to account for differences in sequencing depth across cells and other technical factors. Normalized data is important for accurate comparison between cells.
+matrix1 <- as.data.frame(matrix)
+
+# Define the directory for saving outputs
+metadir1 <- "/Users/fin/Desktop/A2780S/"
+
+# Define the new subfolder for trajectory analysis within the base directory
+trajectory_folder <- file.path(metadir1, "Trajectory")
+
+# Check if the trajectory directory exists; if not, create it
+if (!dir.exists(trajectory_folder)) {
+  dir.create(trajectory_folder, recursive = TRUE)
+}
+```
+
+## Writing Data to CSV and RDS
+```{r}
+# Paths for the files to be saved in the new "Trajectory" folder
+csv_path <- file.path(trajectory_folder, "CORRECTcountmatrix.csv")
+rds_path <- file.path(trajectory_folder, "CORRECTcountmatrix.rds")
+
+# Save the dataframe as CSV
+fwrite(matrix1, file = csv_path, row.names = TRUE, col.names = TRUE)
+
+# Save the dataframe as RDS
+saveRDS(matrix1, file = rds_path)
+```
+
+## Preparing Data for Other Analysis Tools
+```{r}
+# Write data as TSV for compatibility with other tools
+fwrite(matrix1, file = file.path(trajectory_folder, "CORRECTcountmatrix.tsv"), row.names = TRUE, col.names = TRUE)
+```
+
+## Extract count matrix only for A2780S
+```{r}
+# Define the directory for saving specific outputs
+metadir2 <- '/Users/fin/Desktop/A2780S/Trajectory'
+
+# Assuming '3449' is the correct number of columns for A2780S specific data
+dim(A2780S) #[1] 33538  3449
+A2780S_matrix <- matrix1[, 1:3449]
+fwrite(A2780S_matrix, file = file.path(metadir2, "CORRECTcountmatrix.csv"), row.names = TRUE, col.names = TRUE)
+fwrite(A2780S_matrix, file = file.path(metadir2, "CORRECTcountmatrix.tsv"), row.names = TRUE, col.names = TRUE)
+```
+
+## Transpose count matrix and add the cluster label 
+```{r}
+# Transpose the matrix and convert it to a data frame
+matrix1.t <- t(matrix1)
+matrix2.t <- as.data.frame(matrix1.t)
+
+# Extract the cluster labels from the Seurat object's metadata
+A2780S_clusters <- A2780S@meta.data[["seurat_clusters"]]  # Adjust if using a different name for Seurat object or clusters
+
+# Combine the transposed data frame with cluster labels
+A2780Scountmatrix <- cbind(matrix2.t, seurat_clusters = A2780S_clusters)
+
+# Define the directory for saving outputs
+metadir1 <- "/Users/fin/Desktop/A2780S/Trajectory/"  # Adjust as necessary, perhaps to include a subdirectory
+
+# Save the combined dataframe as CSV
+csv_path <- file.path(metadir1, "countmatrix_with_clusters.csv")
+fwrite(A2780Scountmatrix, file = csv_path, row.names = TRUE, col.names = TRUE)
+fwrite(matrix2.t, file =file.path(metadir1, "Normalize_express.csv" ),row.names = TRUE, col.names = TRUE)
+View(matrix2.t)
+```
+
+```{r}
+# Extract the names and clusters from the metadata of the Seurat object
+A2780S_names <- A2780S@meta.data[0]
+A2780S_clusters <- A2780S@meta.data[["seurat_clusters"]]  # Ensure this is the correct metadata column for clusters
+
+# Combine the names and cluster labels
+A2780S_names_and_clusters <- cbind(A2780S_names, seurat_clusters = A2780S_clusters)
+
+# Convert to a data frame
+A2780S_names_and_clusters_df <- as.data.frame(A2780S_names_and_clusters)
+
+# Define the directory for saving outputs
+metadir1 <- "/Users/fin/Desktop/A2780S/Trajectory/"  # Assuming you want it saved in the Trajectory folder
+
+# Save the dataframe as CSV
+csv_path <- file.path(metadir1, "names_and_clusters.csv")
+fwrite(A2780S_names_and_clusters_df, file = csv_path, row.names = TRUE, col.names = TRUE)
+```
+
+# Trajectory
+# Monocle3
+```{r}
+library(monocle3)
+library(SeuratWrappers)
+# convert seurant obj to cell_data_set (cds) object for monocle3
+A2780S <- readRDS("/Users/fin/Desktop/A2780S/Process_data/A2780S_S+R_QC-Subset-Cohort_SeuratObj_thruStep8_.rds")
+cds <- as.cell_data_set(A2780S)
+```
+
+
+
+```{r}
+# Get Marker and save file
+A2780S <- readRDS("/Users/fin/Desktop/A2780S/Process_data/A2780S_S+R_QC-Subset-Cohort_SeuratObj_thruStep8_.rds")
+A2780S.markers <- FindAllMarkers(A2780S, min.pct = 0.25, logfc.threshold = 0.25)
+saveRDS(A2780S.markers, "/Users/fin/Desktop/A2780S/Process_data/A2780S_S+R_QC-Subset-Cohort_SeuratObj_marker.rds")
+
+# Get marker into data frame
+A2780S_marker <- readRDS("/Users/fin/Desktop/A2780S/Process_data/A2780S_S+R_QC-Subset-Cohort_SeuratObj_marker.rds")
+marker_matrix <- as.data.frame(A2780S_marker)
+
+# Get cell meta data
+A2780S_meta <- A2780S@meta.data
+
+# Unprocess data load
+Unprocess_data <- readRDS("/Users/fin/Desktop/A2780S/Unprocessed_data/A2780S-CT_S+R_UnprocessedCohort_SeuratObj_.rds")
+Unprocess_data <- Unprocess_data@meta.data
+
+# Get Cell expression data
+A2780S_expression <- read.csv("/Users/fin/Desktop/A2780S/Trajectory/CORRECTcountmatrix.csv")
+
+# Create Seurant Object
+seu.obj <- CreateSeuratObject(counts = A2780S_expression) 
+
+# convert seurant obj to cell_data_set (cds) object for monocle3
+cds <- as.cell_data_set(A2780S)
+```
+## Assign Partition
+```{r}
+# Create a uniform partition label for all cells
+reacreate.partition <- rep(1, length(cds@colData@rownames))
+names(reacreate.partition) <- rownames(cds@colData)
+reacreate.partition <- as.factor(reacreate.partition)
+
+# Update the cds object with the new partition label
+# Check if the structure of your object supports this assignment
+cds@clusters$UMAP$partitions <- reacreate.partition
+```
+
+## Assign the cluster info
+
+```{r}
+lsit_cluster <- A2780S@active.ident # This retrieves the active identity classes (clusters)
+
+# Assign cluster labels from 'lsit_cluster' to the UMAP cluster information slot within the 'cds' object.
+# This integrates clustering results directly with the UMAP dimensionality reduction in the 'cds' data structure,
+# allowing for enhanced visualization and analysis of clusters based on UMAP coordinates.
+cds@clusters$UMAP$clusters <- lsit_cluster
+
+
+# Assign UMAP coordinate - cell embedding
+cds@int_colData@listData$reducedDims$UMAP <- A2780S@reductions$umap@cell.embeddings
+```
+
+## Learn trajectory graph
+```{r}
+cds <- learn_graph(cds, use_partition = FALSE)
+plot_cells(cds,
+           color_cells_by = 'orig.ident',
+           label_groups_by_cluster = FALSE,
+           label_branch_points = FALSE,
+           label_roots =FALSE,
+           label_leaves = FALSE,
+           group_label_size = 5)
+```
+
+## Order the cells in pseudotime
+```{r}
+cds <- order_cells(cds, reduction_method = 'UMAP', root_cells = colnames(cds[,clusters(cds) == 0])) #input start cluster from prior knowledge
+
+plot_cells(cds,
+           color_cells_by = 'pseudotime',
+           label_groups_by_cluster = FALSE,
+           label_branch_points = FALSE,
+           label_roots = FALSE,
+           label_leaves = FALSE)
+```
+
+## Visualizing pseudotime in seurat
+```{r}
+## Cells ordered by monocle3 pseudotime
+A2780S$pseudotime <- pseudotime(cds)
+Idents(A2780S) <- A2780S$seurat_clusters
+FeaturePlot(A2780S, features = "pseudotime", label = T)
+```
+
+```{r}
+cluster.before.trajectory <- plot_cells(cds,
+                                        color_cells_by = 'seurat_clusters',
+                                        label_groups_by_cluster = FALSE,
+                                        group_label_size = 5) + theme(legend.position = 'right')
+cluster.names <- plot_cells(cds,
+           color_cells_by = 'orig.ident',
+           label_groups_by_cluster = FALSE,
+           group_label_size = 5) + theme(legend.position = 'right')
+
+cluster.before.trajectory | cluster.names
+
+```
+
+```{r}
+pseudotime(cds)
+cds$monocle3_pseudotime <- pseudotime(cds)
+data.pseudo <- as.data.frame(colData(cds))
+
+ggplot(data.pseudo, aes(monocle3_pseudotime, reorder(seurat_clusters, monocle3_pseudotime, median), fill = seurat_clusters)) +
+  geom_boxplot()
+```
+## Finding genes that change as a function of pseudotime
+```{r}
+# We are often interested in finding genes that are differentially expressed across a single-cell trajectory. Monocle3 introduces a new approach for finding such genes that draws on a powerful technique in spatial correlation analysis, the Moran’s I test. Moran’s I is a measure of multi-directional and multi-dimensional spatial autocorrelation. The statistic tells you whether cells at nearby positions on a trajectory will have similar (or dissimilar) expression levels for the gene being tested. Although both Pearson correlation and Moran’s I ranges from -1 to 1, the interpretation of Moran’s I is slightly different: +1 means that nearby cells will have perfectly similar expression; 0 represents no correlation, and -1 means that neighboring cells will be anti-correlated.
+A2780S_cells <- graph_test(cds, neighbor_graph = 'principal_graph', cores = 4)
+
+A2780S_ok_cells <- A2780S_cells %>% 
+  arrange(q_value) %>% 
+  filter(status == 'OK')
+```
+
+```{r}
+#Visualize pseudotime in monocle3
+marker_test_res <- top_markers(cds, group_cells_by="cluster", verbose = T)
+
+# cell_group character vector of the cell group to which the cell belongs
+# marker_score numeric vector of marker scores as the fraction expressing scaled by the specificity. The value ranges from 0 to 1.
+# mean_expression numeric vector of mean normalized expression of the gene in the cell group
+# fraction_expressing numeric vector of fraction of cells expressing the gene within the cell group
+# specificity numeric vector of a measure of how specific the gene's expression is to the cell group based on the Jensen-Shannon divergence. The value ranges from 0 to 1.
+# pseudo_R2 numeric vector of pseudo R-squared values, a measure of how well the gene expression model fits the categorical data relative to the null model. The value ranges from 0 to 1.
+# marker_test_p_value numeric vector of likelihood ratio p-values
+# marker_test_q_value numeric vector of likelihood ratio q-values
+
+top_specific_markers <- marker_test_res %>% 
+  filter (fraction_expressing >= 0.10) %>%
+  group_by (cell_group) %>%
+  top_n (15, marker_score) # top 15 gene
+
+top_specific_marker_ids <- unique(top_specific_markers %>% pull (gene_id))
+
+
+rowData(cds)$gene_short_name <- row.names(rowData(cds))
+plot_genes_by_group(cds,
+                    top_specific_marker_ids, 
+                    group_cells_by="cluster",
+                    ordering_type="maximal_on_diag",
+                    max.size=3)
+
+top_specific_markers <- marker_test_res %>%
+                            filter(fraction_expressing >= 0.10) %>%
+                            group_by(cell_group) %>%
+                            top_n(15, pseudo_R2)
+
+top_specific_marker_ids <- unique(top_specific_markers %>% pull(gene_id))
+plot_genes_by_group(cds,
+                    top_specific_marker_ids,
+                    group_cells_by="cluster",
+                    ordering_type="maximal_on_diag",
+                    max.size=3)
+```
+##Identify genes that change as a function of pseudotime
+```{r}
+#https://ucdavis-bioinformatics-training.github.io/2021-August-Advanced-Topics-in-Single-Cell-RNA-Seq-Trajectory-and-Velocity/data_analysis/monocle_fixed
+#https://cole-trapnell-lab.github.io/monocle3/docs/differential/
+A2780S_cells <- graph_test(cds, neighbor_graph = 'principal_graph', cores = 4)
+
+A2780S_ok_cells <- A2780S_cells %>% 
+  arrange(q_value) %>% 
+  filter(status == 'OK')
+
+deg_ids <- rownames(subset(A2780S_cells[order(A2780S_cells$morans_I, decreasing = TRUE),], q_value < 0.05))
+top_genes_to_plot <- head(deg_ids, 30)
+plot_cells(cds,
+           genes=top_genes_to_plot,
+           show_trajectory_graph = FALSE,
+           label_cell_groups = FALSE,
+           label_leaves = FALSE)
+
+
+# Prepare the image file to save the plot
+png(file = "/Users/fin/Desktop/A2780S/pseudotime_gene.png", width = 1200, height = 800)
+
+# Plot cells with specific parameters
+plot_cells(cds,
+           genes = top_genes_to_plot,
+           show_trajectory_graph = FALSE,
+           label_cell_groups = FALSE,
+           label_leaves = FALSE)
+
+# Close the device to finalize the image file
+dev.off()
+```
+
+# Slingshot
+```{r}
+#https://bustools.github.io/BUS_notebooks_R/slingshot.html
+
+library(slingshot, quietly = FALSE)
+library(SingleCellExperiment)
+library(slingshot)
+```
+
+```{r}
+A2780S <- readRDS("/Users/fin/Desktop/A2780S/Process_data/A2780S_S+R_QC-Subset-Cohort_SeuratObj_thruStep7_.rds")
+A2780S <- FindNeighbors(object=A2780S, dims = 1:50)
+A2780S <- FindClusters(object=A2780S, resolution = 0.1)
+A2780S <- RunUMAP(object = A2780S, reduction = "pca", dims = 1:50)
+A2780S.markers <- FindAllMarkers(A2780S, min.pct = 0.25, logfc.threshold = 0.25)
+```
+
+```{r}
+# Assuming your Seurat object is named seuratObj
+sce <- as.SingleCellExperiment(A2780S)
+# Run Slingshot
+sce <- slingshot(sce, clusterLabels = 'seurat_clusters', reducedDim = 'UMAP')
+
+plot(reducedDims(sce)$UMAP, col = rainbow(length(unique(sce$seurat_clusters)))[sce$seurat_clusters], pch = 16, asp = 1)
+lines(SlingshotDataSet(sce), lwd = 2, type = 'lineages')
+```
+
+```{r}
+# Extract Slingshot output
+slingshot_output <- SlingshotDataSet(sce)
+
+# Pseudotime values
+pseudotime_values <- slingPseudotime(slingshot_output, na = FALSE)
+
+# Lineage information
+lineages <- slingCurves(slingshot_output)
+plot(pseudotime_values, col = rainbow(length(unique(sce$seurat_clusters)))[sce$seurat_clusters], pch = 16, xlab = "Pseudotime", ylab = "Cells")
+``
+
+
