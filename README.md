@@ -27,4 +27,4 @@ This repository contains code used in the analysis of A2780 cell line. The code 
  - `A2780S_Pathway_Analysis.Rmd` : R Markdown containing code chunk for pathway analysis. The code chunks within the markdown are designed to be run after Step 8 from `A2780S_DE+Trajectory.Rmd`
  
 ### Acknowledgments
-We would like to thank Meghan C. Ferrall-Fairbanks and Adriana Del Pino Herrera for support and guidance. 
+We would like to thank Meghan C. Ferrall-Fairbanks and Adriana Del Pino Herrera for support and guidance. Figure 10 and 11 were created with GraphPad Prism.

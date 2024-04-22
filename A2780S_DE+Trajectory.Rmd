@@ -577,7 +577,6 @@ library(monocle3)
 library(SeuratWrappers)
 # convert seurant obj to cell_data_set (cds) object for monocle3
 A2780S <- readRDS("/Users/fin/Desktop/A2780S/Process_data/A2780S_S+R_QC-Subset-Cohort_SeuratObj_thruStep8_.rds")
-cds <- as.cell_data_set(A2780S)
 ```
 
 
@@ -609,7 +608,11 @@ seu.obj <- CreateSeuratObject(counts = A2780S_expression)
 cds <- as.cell_data_set(A2780S)
 ```
 ## Assign Partition
+Clusters are particularly useful while trying to assign cells to a certain type, because they are based on the similarity in gene expression. The relationships between different clusters are analysed to identify possible trajectories.
+
+Partitions, meanwhile, are larger groups of cells that usually contain several clusters. Trajectory inference is performed only within one partition, so it is essential that all the cells that we want to analyse in pseudotime belong to the same partition.
 ```{r}
+#https://training.galaxyproject.org/training-material/topics/single-cell/tutorials/scrna-case_monocle3-rstudio/tutorial.html#trajectory-inference
 # Create a uniform partition label for all cells
 reacreate.partition <- rep(1, length(cds@colData@rownames))
 names(reacreate.partition) <- rownames(cds@colData)
@@ -621,7 +624,6 @@ cds@clusters$UMAP$partitions <- reacreate.partition
 ```
 
 ## Assign the cluster info
-
 ```{r}
 lsit_cluster <- A2780S@active.ident # This retrieves the active identity classes (clusters)
 
@@ -689,88 +691,6 @@ data.pseudo <- as.data.frame(colData(cds))
 ggplot(data.pseudo, aes(monocle3_pseudotime, reorder(seurat_clusters, monocle3_pseudotime, median), fill = seurat_clusters)) +
   geom_boxplot()
 ```
-## Finding genes that change as a function of pseudotime
-```{r}
-# We are often interested in finding genes that are differentially expressed across a single-cell trajectory. Monocle3 introduces a new approach for finding such genes that draws on a powerful technique in spatial correlation analysis, the Moran’s I test. Moran’s I is a measure of multi-directional and multi-dimensional spatial autocorrelation. The statistic tells you whether cells at nearby positions on a trajectory will have similar (or dissimilar) expression levels for the gene being tested. Although both Pearson correlation and Moran’s I ranges from -1 to 1, the interpretation of Moran’s I is slightly different: +1 means that nearby cells will have perfectly similar expression; 0 represents no correlation, and -1 means that neighboring cells will be anti-correlated.
-A2780S_cells <- graph_test(cds, neighbor_graph = 'principal_graph', cores = 4)
-
-A2780S_ok_cells <- A2780S_cells %>% 
-  arrange(q_value) %>% 
-  filter(status == 'OK')
-```
-
-```{r}
-#Visualize pseudotime in monocle3
-marker_test_res <- top_markers(cds, group_cells_by="cluster", verbose = T)
-
-# cell_group character vector of the cell group to which the cell belongs
-# marker_score numeric vector of marker scores as the fraction expressing scaled by the specificity. The value ranges from 0 to 1.
-# mean_expression numeric vector of mean normalized expression of the gene in the cell group
-# fraction_expressing numeric vector of fraction of cells expressing the gene within the cell group
-# specificity numeric vector of a measure of how specific the gene's expression is to the cell group based on the Jensen-Shannon divergence. The value ranges from 0 to 1.
-# pseudo_R2 numeric vector of pseudo R-squared values, a measure of how well the gene expression model fits the categorical data relative to the null model. The value ranges from 0 to 1.
-# marker_test_p_value numeric vector of likelihood ratio p-values
-# marker_test_q_value numeric vector of likelihood ratio q-values
-
-top_specific_markers <- marker_test_res %>% 
-  filter (fraction_expressing >= 0.10) %>%
-  group_by (cell_group) %>%
-  top_n (15, marker_score) # top 15 gene
-
-top_specific_marker_ids <- unique(top_specific_markers %>% pull (gene_id))
-
-
-rowData(cds)$gene_short_name <- row.names(rowData(cds))
-plot_genes_by_group(cds,
-                    top_specific_marker_ids, 
-                    group_cells_by="cluster",
-                    ordering_type="maximal_on_diag",
-                    max.size=3)
-
-top_specific_markers <- marker_test_res %>%
-                            filter(fraction_expressing >= 0.10) %>%
-                            group_by(cell_group) %>%
-                            top_n(15, pseudo_R2)
-
-top_specific_marker_ids <- unique(top_specific_markers %>% pull(gene_id))
-plot_genes_by_group(cds,
-                    top_specific_marker_ids,
-                    group_cells_by="cluster",
-                    ordering_type="maximal_on_diag",
-                    max.size=3)
-```
-##Identify genes that change as a function of pseudotime
-```{r}
-#https://ucdavis-bioinformatics-training.github.io/2021-August-Advanced-Topics-in-Single-Cell-RNA-Seq-Trajectory-and-Velocity/data_analysis/monocle_fixed
-#https://cole-trapnell-lab.github.io/monocle3/docs/differential/
-A2780S_cells <- graph_test(cds, neighbor_graph = 'principal_graph', cores = 4)
-
-A2780S_ok_cells <- A2780S_cells %>% 
-  arrange(q_value) %>% 
-  filter(status == 'OK')
-
-deg_ids <- rownames(subset(A2780S_cells[order(A2780S_cells$morans_I, decreasing = TRUE),], q_value < 0.05))
-top_genes_to_plot <- head(deg_ids, 30)
-plot_cells(cds,
-           genes=top_genes_to_plot,
-           show_trajectory_graph = FALSE,
-           label_cell_groups = FALSE,
-           label_leaves = FALSE)
-
-
-# Prepare the image file to save the plot
-png(file = "/Users/fin/Desktop/A2780S/pseudotime_gene.png", width = 1200, height = 800)
-
-# Plot cells with specific parameters
-plot_cells(cds,
-           genes = top_genes_to_plot,
-           show_trajectory_graph = FALSE,
-           label_cell_groups = FALSE,
-           label_leaves = FALSE)
-
-# Close the device to finalize the image file
-dev.off()
-```
 
 # Slingshot
 ```{r}
@@ -809,6 +729,4 @@ pseudotime_values <- slingPseudotime(slingshot_output, na = FALSE)
 # Lineage information
 lineages <- slingCurves(slingshot_output)
 plot(pseudotime_values, col = rainbow(length(unique(sce$seurat_clusters)))[sce$seurat_clusters], pch = 16, xlab = "Pseudotime", ylab = "Cells")
-``
-
-
+```
